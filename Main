@@ -1,0 +1,122 @@
+import sys
+import os
+import time
+import datetime
+import pandas as pd
+
+from pathlib import Path
+
+import random
+import argparse
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
+from Helpers.Model import EEGNet4
+
+from Helpers.Helpers import BIODataset, BIODataLoader, data_generate, pathfinder
+from Helpers.Variables import device, WD, DATASET_DIR, METRICS, FILENAME_MODEL, DATASET_DIR
+from Helpers.trainer import Trainer
+
+import torch
+
+
+def Experiment(args):
+    RESD = os.path.join(WD, 'res') # 결과 저장 폴더 경로
+
+    # 결과 저장 경로 설정 1
+    Path(RESD).mkdir(parents=True, exist_ok=True)
+    res_flen = str(len(os.listdir(RESD)))
+    print(f"Saving results to res/{res_flen}")
+    
+    # k-fold
+    num_fold = 2  # k fold, 1~6 fold (5번의 반복)
+
+    ########################
+    #### Training Phase ####
+    ########################
+    for nf in range(1, num_fold):
+
+        print('='*30)
+        print(' '*11, 'FOLD', nf)
+        print('='*30)
+
+        # processed data 불러올 경로 설정
+        data_load_dir = f'{DATASET_DIR}/{nf}fold'
+        print(f'Loaded data from {DATASET_DIR}/fold{nf}') 
+        
+        nfoldname = f'fold{nf}'
+
+        ### subject 별 실험 시작
+        for subj in range(1, 2):
+            for expt in range(1, 2):
+                # 데이터 정보 불러오기
+                *_, sbj = pathfinder(subj, expt)
+                print('='*30)
+                print(' '*4, 'Training: S{} - EXPT{}'.format(sbj, expt))
+                print('='*30)
+                # 데이터 정보 불러오기
+                *_, sbj = pathfinder(subj, expt)     
+
+                # 결과 저장 경로 설정 2
+                res_name = f'S{sbj}_EXPT{expt}' 
+                
+                res_dir = os.path.join(RESD, nfoldname, res_name)
+                Path(res_dir).mkdir(parents=True, exist_ok=True)
+
+                tr_dataset = BIODataset('train', device, data_load_dir, res_name)
+                train_loader = BIODataLoader(dataset=tr_dataset, batch_size=int(args.BATCH), \
+                                                num_workers=0, shuffle=False, drop_last=True)
+                vl_dataset = BIODataset('valid', device, data_load_dir, res_name)
+                valid_loader = BIODataLoader(dataset=vl_dataset, batch_size=int(args.BATCH), \
+                                                num_workers=0, shuffle=False, drop_last=True)
+                
+                my_model = EEGNet4(args).to(device)
+                MODEL_PATH = os.path.join(res_dir, FILENAME_MODEL)
+                MODEL_PATH = f'{MODEL_PATH}'
+
+                # 학습
+                trainer = Trainer(args, my_model, MODEL_PATH) 
+                tr_history = trainer.train(train_loader, valid_loader)
+                print('End of Train\n')
+
+
+if __name__ == '__main__':
+    start = time.time()
+    parser = argparse.ArgumentParser(description='')
+    
+    parser = argparse.ArgumentParser("MS",formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--gpu", type=int, default=3, help="which gpu to use")
+    parser.add_argument("--SEED", default=42)
+
+    ########## 데이터 및 모델 선택 
+    parser.add_argument('--early_stop', default=True, choices=[True, False])
+
+    ########## 실험 하이퍼 파라미터 설정 
+    parser.add_argument('--BATCH', default=16, help='Batch Size') # original 16
+    parser.add_argument('--EPOCH', default=10, help='Epoch') # original: 50, set: 10
+    parser.add_argument("--func", default='CE', choices = ['MSE', 'CE'])    
+    parser.add_argument('--optimizer', default='AdamW', help='Optimizer')
+    parser.add_argument('--lr', default=0.002, help='Adam Learning Rate') # original: 0.001
+    parser.add_argument('--freq_time', default=625, help='frequency(250)*time window(3)')
+
+    ########## 클래스 및 채널 수 지정
+    parser.add_argument('--n_channels', default=28)
+    parser.add_argument('--n_classes', default=3)
+
+    args = parser.parse_args()
+
+    ########## 시드 고정
+    random.seed(args.SEED)
+    np.random.seed(args.SEED)
+    torch.manual_seed(args.SEED)
+    torch.cuda.manual_seed(args.SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
+
+    Experiment(args)                            
+    
+    print('Code Time Consumption: ', str(datetime.timedelta(seconds=time.time() - start)).split('.')[0])
